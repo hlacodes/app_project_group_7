@@ -1,152 +1,299 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import '../models/safepark_models.dart';
-import '../services/safepark_store.dart';
-import '../utils/theme_constants.dart';
-import '../widgets/shared_widgets.dart';
+import '../services/safepark_state.dart';
 
-class AlertsView extends StatefulWidget {
-  final SafeParkStore store;
-  final PaletteOption pal;
-  final void Function(String msg) onToast;
-
-  const AlertsView({
-    super.key,
-    required this.store,
-    required this.pal,
-    required this.onToast,
-  });
+class AlertsScreen extends StatefulWidget {
+  final SafeParkState state;
+  const AlertsScreen({super.key, required this.state});
 
   @override
-  State<AlertsView> createState() => _AlertsViewState();
+  State<AlertsScreen> createState() => _AlertsScreenState();
 }
 
-class _AlertsViewState extends State<AlertsView> {
-  bool _sentToMe = true;
+class _AlertsScreenState extends State<AlertsScreen> {
+  bool _showSentToYou = true;
+  late Timer _ticker;
+  DateTime _now = DateTime.now();
 
   @override
   void initState() {
     super.initState();
-    _markMineRead();
+    _ticker = Timer.periodic(const Duration(seconds: 1), (_) {
+      if (mounted) setState(() => _now = DateTime.now());
+    });
   }
 
-  void _markMineRead() {
-    final email = widget.store.currentUser?['email']?.toString();
-    if (email == null) return;
-    bool ch = false;
-    for (final a in widget.store.alerts) {
-      if (a.to == email && !a.read) {
-        a.read = true;
-        ch = true;
-      }
-    }
-    if (ch) widget.store.persist();
+  @override
+  void dispose() {
+    _ticker.cancel();
+    super.dispose();
   }
 
-  void _reply(AlertItem item, String text) {
-    item.reply = text;
-    if (item.fwd) {
-      for (final orig in widget.store.alerts) {
-        if (orig.id == item.id - 1) orig.reply = 'Backup contact: $text';
-      }
-    }
-    widget.store.persist();
-    setState(() {});
-    widget.onToast('Reply sent');
+  String _formatCountdown(Duration remaining) {
+    final secs = remaining.inSeconds.clamp(0, 999999);
+    final m = (secs ~/ 60).toString().padLeft(2, '0');
+    final s = (secs % 60).toString().padLeft(2, '0');
+    return '$m:$s';
   }
 
   @override
   Widget build(BuildContext context) {
-    final s = widget.store;
-    final email = s.currentUser?['email']?.toString() ?? '';
-    final inbox = s.alerts.where((a) => a.to == email).toList();
-    final sent = s.reports.where((r) => r.user == email).toList();
+    final s = widget.state;
+    final d = s.design;
+    final email = s.currentUser?.email;
 
-    return SingleChildScrollView(
-      padding: const EdgeInsets.fromLTRB(18, 48, 18, 96),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          Text(tr('alerts', s.arabic, 'Alerts'), style: const TextStyle(fontSize: 26, fontWeight: FontWeight.bold)),
-          Text('Messages about your car', style: TextStyle(color: Theme.of(context).hintColor, fontSize: 14)),
-          const SizedBox(height: 14),
-          SegmentedButton<bool>(
-            segments: [
-              ButtonSegment(value: true, label: Text(s.arabic ? 'وصلتك' : 'Sent to you')),
-              const ButtonSegment(value: false, label: Text('Sent by you')),
-            ],
-            selected: {_sentToMe},
-            onSelectionChanged: (set) => setState(() => _sentToMe = set.first),
+    final incoming = email == null
+        ? <SafeParkAlert>[]
+        : s.alerts.where((a) => a.to == email).toList();
+    final outgoing = email == null
+        ? <SafeParkReport>[]
+        : s.reports.where((r) => r.user == email).toList();
+
+    final escDuration = Duration(minutes: s.settings.escalationMinutes);
+
+    return ListView(
+      padding: const EdgeInsets.fromLTRB(18, 12, 18, 100),
+      children: [
+        Text('Alerts', style: TextStyle(fontSize: 26, fontWeight: FontWeight.w700, color: d.ink)),
+        const SizedBox(height: 4),
+        Text('Messages about your car', style: TextStyle(fontSize: 14, color: d.mute)),
+        const SizedBox(height: 14),
+        Container(
+          padding: const EdgeInsets.all(4),
+          decoration: BoxDecoration(
+            color: d.cardAlt,
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(color: d.border),
           ),
-          const SizedBox(height: 14),
-          if (_sentToMe) ...[
-            if (inbox.isEmpty)
-              const EmptyPlaceholder(icon: Icons.notifications_none, text: 'No alerts yet.\nYou will see them here.')
-            else
-              ...inbox.map((a) {
-                final badgeText = a.reply.isNotEmpty ? 'replied' : (a.read ? 'seen' : 'new');
-                return AlertCard(
-                  badge: badgeText,
-                  title: '${a.car}: ${a.kind}',
-                  subLines: [
-                    if (a.ver) '✓ Verified student',
-                    if (a.fwd) '↪ Forwarded: the owner hasn’t replied',
-                    if (a.eta != null && a.reply.isEmpty) 'In class until ${a.eta}',
-                    if (a.loc.isNotEmpty) a.loc,
-                  ],
-                  body: a.text,
-                  imgBase64: a.imgBase64,
-                  footer: a.reply.isNotEmpty
-                      ? Text('You: ${a.reply}', style: TextStyle(color: Theme.of(context).hintColor, fontSize: 12))
-                      : Row(
+          child: Row(
+            children: [
+              Expanded(
+                child: _SegmentBtn(
+                  label: 'Sent to you (${incoming.length})',
+                  active: _showSentToYou,
+                  design: d,
+                  onTap: () => setState(() => _showSentToYou = true),
+                ),
+              ),
+              Expanded(
+                child: _SegmentBtn(
+                  label: 'Sent by you (${outgoing.length})',
+                  active: !_showSentToYou,
+                  design: d,
+                  onTap: () => setState(() => _showSentToYou = false),
+                ),
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(height: 16),
+        if (_showSentToYou)
+          if (incoming.isEmpty)
+            _EmptyBox(design: d)
+          else
+            ...incoming.map((a) {
+              final elapsed = _now.difference(a.createdAt);
+              final remaining = escDuration - elapsed;
+              final callReached = remaining <= Duration.zero || a.called;
+
+              return Card(
+                margin: const EdgeInsets.only(bottom: 12),
+                child: Padding(
+                  padding: const EdgeInsets.all(14),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text('${a.car} · ${a.kind}', style: TextStyle(fontWeight: FontWeight.w700, color: d.ink)),
+                      if (a.loc.isNotEmpty)
+                        Text(a.loc, style: TextStyle(fontSize: 12, color: d.mute)),
+                      const SizedBox(height: 6),
+                      Text(a.text, style: TextStyle(fontSize: 14, color: d.ink)),
+                      if (a.reply.isEmpty && s.settings.autoCall) ...[
+                        const SizedBox(height: 8),
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                          children: [
+                            Text(
+                              callReached
+                                  ? 'No reply in ${s.settings.escalationMinutes}m · app call triggered'
+                                  : 'Auto-call in ${_formatCountdown(remaining)}',
+                              style: TextStyle(
+                                fontSize: 12,
+                                color: callReached ? d.danger : d.mute,
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                            if (callReached)
+                              TextButton.icon(
+                                onPressed: () => s.triggerCall(a),
+                                icon: Icon(Icons.phone_in_talk_rounded, size: 16, color: d.danger),
+                                label: Text('Answer call', style: TextStyle(color: d.danger)),
+                              ),
+                          ],
+                        ),
+                      ],
+                      const SizedBox(height: 10),
+                      if (a.reply.isNotEmpty)
+                        Text('Your reply: ${a.reply}', style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: d.success))
+                      else
+                        Row(
                           children: [
                             Expanded(
-                              child: FilledButton(
-                                style: FilledButton.styleFrom(backgroundColor: widget.pal.pri),
-                                onPressed: () => _reply(a, 'Coming in 5 min'),
-                                child: const Text('5 min'),
+                              child: ElevatedButton(
+                                onPressed: () => s.replyToAlert(a.id, 'Coming in 5 min'),
+                                style: ElevatedButton.styleFrom(
+                                  backgroundColor: d.primary,
+                                  foregroundColor: d.primaryInk,
+                                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(d.buttonRadius)),
+                                ),
+                                child: const Text('Coming in 5 min', style: TextStyle(fontSize: 12)),
                               ),
                             ),
                             const SizedBox(width: 8),
                             Expanded(
                               child: OutlinedButton(
-                                onPressed: () => _reply(a, 'Moving it now'),
-                                child: const Text('Moving now'),
+                                onPressed: () => s.replyToAlert(a.id, 'Moving it now'),
+                                style: OutlinedButton.styleFrom(
+                                  foregroundColor: d.ink,
+                                  side: BorderSide(color: d.border),
+                                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(d.buttonRadius)),
+                                ),
+                                child: const Text('Moving now', style: TextStyle(fontSize: 12)),
                               ),
                             ),
                           ],
                         ),
-                );
-              }),
-          ] else ...[
-            if (sent.isEmpty)
-              const EmptyPlaceholder(icon: Icons.outbox_outlined, text: 'No sent reports yet.')
-            else
-              ...sent.map((r) {
-                AlertItem? match;
-                for (final a in s.alerts) {
-                  if (a.id == r.id) {
-                    match = a;
-                    break;
-                  }
-                }
-                final statusLabel = match != null
-                    ? (match.reply.isNotEmpty
-                        ? 'replied'
-                        : (match.fwdTo != null ? 'sent to backup' : (match.rep1 ? 'repeated' : (match.eta != null ? 'in class' : (match.read ? 'seen' : 'sent')))))
-                    : r.status;
-                return AlertCard(
-                  badge: statusLabel,
-                  title: '${r.car}: ${r.kind}',
-                  subLines: [
-                    if (r.loc.isNotEmpty) r.loc,
-                    if (match != null && match.eta != null && match.reply.isEmpty) 'Owner is in class, will reply at ${match.eta}',
-                    if (match != null && match.reply.isNotEmpty) 'Owner: ${match.reply}',
+                    ],
+                  ),
+                ),
+              );
+            })
+        else if (outgoing.isEmpty)
+          _EmptyBox(design: d)
+        else
+          ...outgoing.map((r) {
+            final linked = s.alerts.where((a) => a.id == r.id).firstOrNull;
+            final createdAt = linked?.createdAt ?? DateTime.fromMillisecondsSinceEpoch(r.id);
+            final remaining = escDuration - _now.difference(createdAt);
+            final callReady = (linked == null || linked.reply.isEmpty) &&
+                (remaining <= Duration.zero || (linked?.called ?? false));
+
+            return Card(
+              margin: const EdgeInsets.only(bottom: 12),
+              child: Padding(
+                padding: const EdgeInsets.all(14),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text('${r.car} · ${r.kind}', style: TextStyle(fontWeight: FontWeight.w700, color: d.ink)),
+                    const SizedBox(height: 4),
+                    Text(r.text, style: TextStyle(fontSize: 14, color: d.ink)),
+                    if (linked?.reply.isNotEmpty ?? false) ...[
+                      const SizedBox(height: 8),
+                      Text('Owner: ${linked!.reply}', style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: d.success)),
+                    ] else if (s.settings.autoCall) ...[
+                      const SizedBox(height: 8),
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          Text(
+                            callReady
+                                ? 'No reply in ${s.settings.escalationMinutes}m'
+                                : 'App call in ${_formatCountdown(remaining)}',
+                            style: TextStyle(fontSize: 12, color: callReady ? d.danger : d.mute),
+                          ),
+                          if (callReady)
+                            ElevatedButton.icon(
+                              onPressed: () => s.triggerCall(
+                                linked ??
+                                    SafeParkAlert(
+                                      id: r.id,
+                                      to: r.car,
+                                      car: r.car,
+                                      kind: r.kind,
+                                      text: r.text,
+                                      loc: r.loc,
+                                      createdAt: createdAt,
+                                      called: true,
+                                    ),
+                              ),
+                              style: ElevatedButton.styleFrom(
+                                backgroundColor: d.primary,
+                                foregroundColor: d.primaryInk,
+                                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(d.buttonRadius)),
+                              ),
+                              icon: const Icon(Icons.phone_rounded, size: 15),
+                              label: const Text('Call from app', style: TextStyle(fontSize: 12)),
+                            ),
+                        ],
+                      ),
+                    ],
                   ],
-                  body: r.text,
-                  imgBase64: r.imgBase64,
-                );
-              }),
-          ],
+                ),
+              ),
+            );
+          }),
+      ],
+    );
+  }
+}
+
+class _SegmentBtn extends StatelessWidget {
+  final String label;
+  final bool active;
+  final dynamic design;
+  final VoidCallback onTap;
+
+  const _SegmentBtn({
+    required this.label,
+    required this.active,
+    required this.design,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        height: 40,
+        alignment: Alignment.center,
+        decoration: BoxDecoration(
+          color: active ? design.primary : Colors.transparent,
+          borderRadius: BorderRadius.circular(8),
+        ),
+        child: Text(
+          label,
+          style: TextStyle(
+            fontSize: 12,
+            fontWeight: FontWeight.w600,
+            color: active ? design.primaryInk : design.mute,
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _EmptyBox extends StatelessWidget {
+  final dynamic design;
+  const _EmptyBox({required this.design});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(vertical: 40, horizontal: 16),
+      decoration: BoxDecoration(
+        color: design.card,
+        borderRadius: BorderRadius.circular(design.cardRadius),
+        border: Border.all(color: design.border),
+      ),
+      child: Column(
+        children: [
+          Icon(Icons.notifications_none_rounded, size: 36, color: design.mute),
+          const SizedBox(height: 8),
+          Text('No alerts yet.', style: TextStyle(color: design.mute, fontWeight: FontWeight.w600)),
         ],
       ),
     );
