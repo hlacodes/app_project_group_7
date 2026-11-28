@@ -1,0 +1,356 @@
+import 'dart:convert';
+import 'package:flutter/foundation.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import '../models/safepark_models.dart';
+import '../utils/theme_constants.dart';
+
+class SafeParkStore extends ChangeNotifier {
+  final SharedPreferences _prefs;
+
+  SafeParkStore._(this._prefs) {
+    _initDefaults();
+  }
+
+  static Future<SafeParkStore> load() async {
+    final p = await SharedPreferences.getInstance();
+    return SafeParkStore._(p);
+  }
+
+  bool darkMode = false;
+  bool arabic = false;
+  bool haptics = true;
+  bool notifEnabled = true;
+  bool quietHours = false;
+  String quietFrom = '22:00';
+  String quietTo = '07:00';
+  String uniDomain = 'uni.edu';
+  bool verifiedOnly = false;
+  int escalateMinutes = 5;
+
+  String appName = 'SafePark';
+  String tagline = 'Reach the car owner. No phone calls.';
+  String bannerTitle = 'Blocked in? Lights left on?';
+  int paletteIndex = 0;
+
+  String selectedRole = 'student';
+  Map<String, dynamic>? currentUser;
+  List> users = [];
+  List<RegisteredCar> cars = [];
+  List<CarReport> reports = [];
+  List<AlertItem> alerts = [];
+  List<String> recentCodes = [];
+  Map<String, dynamic>? parkedSpot;
+  Map<String, String> userPlans = {};
+  Map<String, String> backupContacts = {};
+  Map<String, ({bool on, List<ClassSlot> list})> classSchedules = {};
+
+  List<EmergencyContact> emergencyContacts = [];
+  List<String> nearbyPlaces = [];
+  List<PricingPlan> plans = [];
+
+  void _initDefaults() {
+    darkMode = _prefs.getBool('sp_dark') ?? false;
+    arabic = _prefs.getBool('sp_ar') ?? false;
+    haptics = _prefs.getBool('sp_haptic') ?? true;
+    notifEnabled = _prefs.getBool('sp_notif') ?? true;
+    quietHours = _prefs.getBool('sp_quiet') ?? false;
+    quietFrom = _prefs.getString('sp_qf') ?? '22:00';
+    quietTo = _prefs.getString('sp_qt') ?? '07:00';
+    uniDomain = _prefs.getString('sp_dom') ?? 'uni.edu';
+    verifiedOnly = _prefs.getBool('sp_vonly') ?? false;
+    escalateMinutes = _prefs.getInt('sp_esc') ?? 5;
+
+    appName = _prefs.getString('sp_name') ?? 'SafePark';
+    tagline = _prefs.getString('sp_tag') ?? 'Reach the car owner. No phone calls.';
+    bannerTitle = _prefs.getString('sp_banner') ?? 'Blocked in? Lights left on?';
+    paletteIndex = (_prefs.getInt('sp_pal') ?? 0).clamp(0, kPalettes.length - 1);
+
+    final rawUsers = _prefs.getString('sp_users');
+    if (rawUsers != null) {
+      users = (jsonDecode(rawUsers) as List).cast>();
+    } else {
+      users = [
+        {'email': 'demo@uni.edu', 'name': 'Demo Student', 'role': 'student', 'pass': 'demo123'}
+      ];
+    }
+
+    final sessionEmail = _prefs.getString('sp_session');
+    if (sessionEmail != null) {
+      currentUser = users.cast?>().firstWhere(
+            (u) => u?['email'] == sessionEmail,
+            orElse: () => null,
+          );
+    }
+
+    final rawCars = _prefs.getString('sp_cars');
+    if (rawCars != null) {
+      cars = (jsonDecode(rawCars) as List)
+          .map((e) => RegisteredCar.fromJson(e as Map<String, dynamic>))
+          .toList();
+    }
+
+    final rawReports = _prefs.getString('sp_reports');
+    if (rawReports != null) {
+      reports = (jsonDecode(rawReports) as List)
+          .map((e) => CarReport.fromJson(e as Map<String, dynamic>))
+          .toList();
+    } else {
+      reports = [
+        CarReport(
+          id: 1,
+          car: 'DEMO-001',
+          kind: 'Blocking me',
+          text: 'Parked behind me at gate 3.',
+          user: 'sara@uni.edu',
+          status: 'open',
+        ),
+        CarReport(
+          id: 2,
+          car: 'CAR-1234',
+          kind: 'Lights on',
+          text: 'Lights are still on.',
+          user: 'omar@uni.edu',
+          status: 'resolved',
+        ),
+        CarReport(
+          id: 3,
+          car: 'DEMO-001',
+          kind: 'Other',
+          text: 'Buy cheap followers now!!!',
+          user: 'spam@uni.edu',
+          status: 'open',
+        ),
+      ];
+    }
+
+    final rawAlerts = _prefs.getString('sp_alerts');
+    if (rawAlerts != null) {
+      alerts = (jsonDecode(rawAlerts) as List)
+          .map((e) => AlertItem.fromJson(e as Map<String, dynamic>))
+          .toList();
+    }
+
+    recentCodes = _prefs.getStringList('sp_recent') ?? [];
+
+    final rawSpot = _prefs.getString('sp_spot');
+    if (rawSpot != null) {
+      parkedSpot = jsonDecode(rawSpot) as Map<String, dynamic>;
+    }
+
+    final rawEm = _prefs.getString('sp_em');
+    if (rawEm != null) {
+      emergencyContacts = (jsonDecode(rawEm) as List)
+          .map((e) => EmergencyContact.fromJson(e as Map<String, dynamic>))
+          .toList();
+    } else {
+      emergencyContacts = [
+        EmergencyContact(name: 'Police', number: '122'),
+        EmergencyContact(name: 'Ambulance', number: '123'),
+      ];
+    }
+
+    nearbyPlaces =
+        _prefs.getStringList('sp_nb') ?? ['Gas station', 'Car mechanic', 'Parking', 'Tow truck'];
+
+    final rawPlans = _prefs.getString('sp_plans');
+    if (rawPlans != null) {
+      plans = (jsonDecode(rawPlans) as List)
+          .map((e) => PricingPlan.fromJson(e as Map<String, dynamic>))
+          .toList();
+    } else {
+      plans = defaultPlans();
+    }
+
+    final rawMyPlans = _prefs.getString('sp_myplan');
+    if (rawMyPlans != null) {
+      userPlans = Map<String, String>.from(jsonDecode(rawMyPlans) as Map);
+    }
+
+    final rawBk = _prefs.getString('sp_bk');
+    if (rawBk != null) {
+      backupContacts = Map<String, String>.from(jsonDecode(rawBk) as Map);
+    }
+
+    final rawCls = _prefs.getString('sp_cls');
+    if (rawCls != null) {
+      final decoded = jsonDecode(rawCls) as Map<String, dynamic>;
+      decoded.forEach((email, val) {
+        final m = val as Map<String, dynamic>;
+        classSchedules[email] = (
+          on: m['on'] == true,
+          list: ((m['list'] as List?) ?? [])
+              .map((x) => ClassSlot.fromJson(x as Map<String, dynamic>))
+              .toList(),
+        );
+      });
+    }
+  }
+
+  static List<PricingPlan> defaultPlans() => [
+        PricingPlan(
+          name: 'Free',
+          price: 'Free',
+          period: '',
+          features: ['3 reports per day', 'QR sticker for 1 car', 'Emergency numbers'],
+        ),
+        PricingPlan(
+          name: 'Student',
+          price: 'EGP 49',
+          period: '/month',
+          features: [
+            'Unlimited reports',
+            'Up to 3 cars',
+            'Class mode & auto-reply',
+            'Verified student badge',
+          ],
+          highlight: true,
+        ),
+        PricingPlan(
+          name: 'Pro',
+          price: 'EGP 99',
+          period: '/month',
+          features: [
+            'Everything in Student',
+            'Up to 10 cars',
+            'Backup contact alerts',
+            'Priority support',
+          ],
+        ),
+      ];
+
+  Future<void> persist() async {
+    await _prefs.setBool('sp_dark', darkMode);
+    await _prefs.setBool('sp_ar', arabic);
+    await _prefs.setBool('sp_haptic', haptics);
+    await _prefs.setBool('sp_notif', notifEnabled);
+    await _prefs.setBool('sp_quiet', quietHours);
+    await _prefs.setString('sp_qf', quietFrom);
+    await _prefs.setString('sp_qt', quietTo);
+    await _prefs.setString('sp_dom', uniDomain);
+    await _prefs.setBool('sp_vonly', verifiedOnly);
+    await _prefs.setInt('sp_esc', escalateMinutes);
+
+    await _prefs.setString('sp_name', appName);
+    await _prefs.setString('sp_tag', tagline);
+    await _prefs.setString('sp_banner', bannerTitle);
+    await _prefs.setInt('sp_pal', paletteIndex);
+
+    await _prefs.setString('sp_users', jsonEncode(users));
+    if (currentUser != null) {
+      await _prefs.setString('sp_session', currentUser!['email'].toString());
+    } else {
+      await _prefs.remove('sp_session');
+    }
+    await _prefs.setString('sp_cars', jsonEncode(cars.map((e) => e.toJson()).toList()));
+    await _prefs.setString('sp_reports', jsonEncode(reports.map((e) => e.toJson()).toList()));
+    await _prefs.setString('sp_alerts', jsonEncode(alerts.map((e) => e.toJson()).toList()));
+    await _prefs.setStringList('sp_recent', recentCodes);
+
+    if (parkedSpot != null) {
+      await _prefs.setString('sp_spot', jsonEncode(parkedSpot));
+    } else {
+      await _prefs.remove('sp_spot');
+    }
+
+    await _prefs.setString('sp_em', jsonEncode(emergencyContacts.map((e) => e.toJson()).toList()));
+    await _prefs.setStringList('sp_nb', nearbyPlaces);
+    await _prefs.setString('sp_plans', jsonEncode(plans.map((e) => e.toJson()).toList()));
+    await _prefs.setString('sp_myplan', jsonEncode(userPlans));
+    await _prefs.setString('sp_bk', jsonEncode(backupContacts));
+
+    final clsMap = <String, dynamic>{};
+    classSchedules.forEach((email, v) {
+      clsMap[email] = {'on': v.on, 'list': v.list.map((x) => x.toJson()).toList()};
+    });
+    await _prefs.setString('sp_cls', jsonEncode(clsMap));
+    notifyListeners();
+  }
+
+  Future<void> resetAllData() async {
+    for (final k in _prefs.getKeys().where((k) => k.startsWith('sp_'))) {
+      await _prefs.remove(k);
+    }
+    currentUser = null;
+    parkedSpot = null;
+    recentCodes = [];
+    alerts = [];
+    cars = [];
+    userPlans = {};
+    backupContacts = {};
+    classSchedules = {};
+    _initDefaults();
+    notifyListeners();
+  }
+
+  bool isVerifiedStudent(Map<String, dynamic>? u) {
+    if (u == null || u['role'] != 'student') return false;
+    final found = users.cast?>().firstWhere(
+          (x) => x?['email'] == u['email'],
+          orElse: () => u,
+        );
+    if (found?['verified'] is bool) return found!['verified'] as bool;
+    final email = (u['email'] ?? '').toString().toLowerCase();
+    return email.endsWith('@$uniDomain');
+  }
+
+  String? activeClassEnd(String email) {
+    final slotWrap = classSchedules[email];
+    if (slotWrap == null || !slotWrap.on) return null;
+    final now = DateTime.now();
+    final jsDay = now.weekday % 7;
+    final hm =
+        '${now.hour.toString().padLeft(2, '0')}:${now.minute.toString().padLeft(2, '0')}';
+    for (final s in slotWrap.list) {
+      if (s.day == jsDay && s.start.compareTo(hm) <= 0 && hm.compareTo(s.end) < 0) {
+        return s.end;
+      }
+    }
+    return null;
+  }
+
+  int get unreadAlertsCount {
+    final email = currentUser?['email']?.toString();
+    if (email == null) return 0;
+    return alerts.where((a) => a.to == email && !a.read).length;
+  }
+
+  void runEscalationTick() {
+    final nowMs = DateTime.now().millisecondsSinceEpoch;
+    bool changed = false;
+    for (final a in List<AlertItem>.from(alerts)) {
+      if (a.ts == 0 || a.reply.isNotEmpty || a.fwd) continue;
+      final mins = (nowMs - a.ts) / 60000.0;
+      if (mins >= escalateMinutes && !a.rep1) {
+        a.rep1 = true;
+        a.read = false;
+        changed = true;
+      }
+      if (mins >= 2 * escalateMinutes && a.fwdTo == null) {
+        final bk = backupContacts[a.to];
+        if (bk != null && bk.isNotEmpty) {
+          a.fwdTo = bk;
+          alerts.insert(
+            0,
+            AlertItem(
+              id: a.id + 1,
+              to: bk,
+              car: a.car,
+              kind: a.kind,
+              text: a.text,
+              loc: a.loc,
+              imgBase64: a.imgBase64,
+              read: false,
+              reply: '',
+              ts: nowMs,
+              ver: a.ver,
+              eta: null,
+              fwd: true,
+            ),
+          );
+          changed = true;
+        }
+      }
+    }
+    if (changed) persist();
+  }
+}
